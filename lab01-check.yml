@@ -1,0 +1,144 @@
+name: FIT4012 Lab 01 Auto Check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  validate-lab01:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate FIT4012 Lab 01 submission
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          root = Path('.')
+          errors = []
+          warnings = []
+
+          required_files = [
+              'README.md',
+              'report-1page.md',
+              'answers/lab1_answers.md',
+              'tests/checklist.md',
+              'logs/activity_log.md',
+          ]
+
+          for rel in required_files:
+              path = root / rel
+              if not path.exists():
+                  errors.append(f'Thieu file bat buoc: {rel}')
+
+          if errors:
+              print('\n'.join(f'::error::{e}' for e in errors))
+              sys.exit(1)
+
+          readme = (root / 'README.md').read_text(encoding='utf-8')
+          report = (root / 'report-1page.md').read_text(encoding='utf-8')
+          answers = (root / 'answers/lab1_answers.md').read_text(encoding='utf-8')
+          checklist = (root / 'tests/checklist.md').read_text(encoding='utf-8')
+          activity = (root / 'logs/activity_log.md').read_text(encoding='utf-8')
+
+          # --- README checks ---
+          for keyword in ['FIT4012', 'Lab 01', 'CIA', 'GitHub']:
+              if keyword.lower() not in readme.lower():
+                  errors.append(f'README.md thieu noi dung toi thieu lien quan den: {keyword}')
+
+          # --- answers checks ---
+          if re.search(r'\.{8,}', answers):
+              errors.append('answers/lab1_answers.md van con cho trong bang dau cham (................................).')
+
+          asset_matches = re.findall(r'^-\s*Asset\s*[0-9]+\s*:\s*(.+)$', answers, flags=re.MULTILINE)
+          filled_assets = [a.strip() for a in asset_matches if a.strip()]
+          if len(filled_assets) < 2:
+              errors.append('answers/lab1_answers.md can co it nhat 2 assets duoc dien day du.')
+
+          for incident in ['A', 'B', 'C']:
+              m = re.search(rf'^-\s*Sự\s*cố\s*{incident}\s*->\s*(.+)$', answers, flags=re.MULTILINE)
+              if not m or not m.group(1).strip():
+                  errors.append(f'answers/lab1_answers.md chua dien CIA mapping cho su co {incident}.')
+
+          for label in ['Threat', 'Vulnerability', 'Mitigation']:
+              m = re.search(rf'^-\s*{label}\s*:\s*(.+)$', answers, flags=re.MULTILINE)
+              if not m or not m.group(1).strip():
+                  errors.append(f'answers/lab1_answers.md chua dien {label}.')
+
+          # Reflection: require some content after heading before bonus section
+          m = re.search(r'##\s*4\.\s*Reflection\s*(.*?)\n---\n\n##\s*5\.', answers, flags=re.DOTALL)
+          if not m or len(re.sub(r'\s+', ' ', m.group(1)).strip()) < 20:
+              errors.append('answers/lab1_answers.md can co phan Reflection toi thieu 20 ky tu.')
+
+          # --- report checks ---
+          if '(4-6 dòng:' in report or '(4-6 dong:' in report.lower():
+              errors.append('report-1page.md van con placeholder o phan ket luan.')
+
+          report_checks = {
+              'asset': r'^-\s*(.+)$',
+              'incident_a': r'^-\s*Sự\s*cố\s*A\s*->\s*(.+)$',
+              'incident_b': r'^-\s*Sự\s*cố\s*B\s*->\s*(.+)$',
+              'incident_c': r'^-\s*Sự\s*cố\s*C\s*->\s*(.+)$',
+              'threat': r'^-\s*Threat\s*:\s*(.+)$',
+              'vulnerability': r'^-\s*Vulnerability\s*:\s*(.+)$',
+              'mitigation': r'^-\s*Mitigation\s*:\s*(.+)$',
+          }
+
+          # Assets under report: accept any two non-empty bullet lines between Assets and CIA mapping
+          asset_block = re.search(r'\*\*Assets:\*\*(.*?)\n\n\*\*CIA mapping:\*\*', report, flags=re.DOTALL)
+          if not asset_block:
+              errors.append('report-1page.md thieu muc Assets trong phan Ket qua chinh.')
+          else:
+              bullets = re.findall(r'^-\s*(.+)$', asset_block.group(1), flags=re.MULTILINE)
+              bullets = [b.strip() for b in bullets if b.strip()]
+              if len(bullets) < 2:
+                  errors.append('report-1page.md can co it nhat 2 assets o phan Ket qua chinh.')
+
+          for key, pattern in list(report_checks.items())[1:]:
+              m = re.search(pattern, report, flags=re.MULTILINE)
+              if not m or not m.group(1).strip():
+                  errors.append(f'report-1page.md chua hoan thien truong: {key}.')
+
+          # --- checklist checks ---
+          checked_boxes = len(re.findall(r'^-\s*\[[xX]\]', checklist, flags=re.MULTILINE))
+          if checked_boxes < 5:
+              errors.append('tests/checklist.md can duoc tick it nhat 5 muc truoc khi nop bai.')
+
+          # --- activity log checks ---
+          activity_checked = len(re.findall(r'^-\s*\[[xX]\]', activity, flags=re.MULTILINE))
+          if activity_checked < 3:
+              errors.append('logs/activity_log.md can co it nhat 3 moc da duoc danh dau hoan thanh.')
+
+          note_match = re.search(r'Điều em học được từ bài lab\s*:\s*(.+)$', activity, flags=re.MULTILINE)
+          if not note_match or len(note_match.group(1).strip()) < 10:
+              warnings.append('Nen dien them dong "Dieu em hoc duoc tu bai lab" trong activity log.')
+
+          # --- git history checks ---
+          try:
+              count = int(subprocess.check_output(['git', 'rev-list', '--count', 'HEAD'], text=True).strip())
+              if count < 3:
+                  errors.append('Repo can co it nhat 3 commits tong cong (1 commit starter + 2 commit lam bai).')
+          except Exception as exc:
+              warnings.append(f'Khong the doc lich su git: {exc}')
+
+          if warnings:
+              print('\n'.join(f'::warning::{w}' for w in warnings))
+
+          if errors:
+              print('\n'.join(f'::error::{e}' for e in errors))
+              sys.exit(1)
+
+          print('::notice::FIT4012 Lab 01 auto check passed.')
+          PY
